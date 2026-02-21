@@ -1,8 +1,7 @@
-# タスク3: ユーザー削除機能の追加 (管理者限定)
+# タスク3: ユーザー削除機能の追加 (管理者限定・改訂版)
 
 ## 概要
-
-ユーザー一覧テーブルに「削除」ボタンを追加し、管理者(ADMIN)権限を持つユーザーのみが他のユーザーを削除できるようにする。
+ユーザー削除機能にサーバーサイドバリデーションを適用し、UIを新しいページネーションの仕組みに対応させ、**エラー表示を改善する**。
 
 ### 実装要件
 
@@ -10,166 +9,161 @@
 2.  **自己削除の禁止**: ログインしているユーザーが自分自身を削除しようとした場合、クライアントサイドで警告を表示し、処理を中止する。サーバーサイドでも念のためチェックを行う。
 3.  **確認ダイアログ**: 削除は取り消せない操作のため、実行前に必ず確認ダイアログを表示する。
 
----
+### 改訂のポイント
+*   **エラー表示の改善**: `useMutation` の `onError` でエラーメッセージをStateに保存し、UIの適切な場所（例: テーブル上部）に表示するように変更する。
 
+---
 ## 実装手順
 
-### 1. 現在のログインユーザー情報を取得するAPI関数を作成する
+### 1. ユーザー削除用のAPI関数を改修する (変更なし)
 
-まず、クライアントとサーバーの両方で「今ログインしているのは誰か？」を知る必要があります。そのためのAPI関数を `session` feature に作成します。
+(これは先ほどの提案通りです)
 
-**ファイルを作成/編集:** `src/features/session/api.ts`
+### 2. 現在のログインユーザー情報を取得するAPI関数 (変更なし)
 
-```ts
-import { auth } from '@/lib/better-auth/auth'
-import { createServerFn } from '@tanstack/react-start/server'
+(これも変更ありません)
 
-// 現在のセッションユーザー情報を取得するサーバー関数
-export const getSessionUser = createServerFn('GET', async () => {
-  const session = await auth.getSession()
-  return session?.user ?? null
-})
-```
+### 3. UIコンポーネントを実装する
 
-### 2. ユーザー削除用のAPI関数を作成する (権限チェック付き)
-
-次に、サーバーサイドでユーザーを削除する関数を作成します。この際、**必ずサーバー側で実行ユーザーの権限チェックと自己削除チェックを行います。**
-
-**ファイルを編集:** `src/features/user/api.ts`
-
-```ts
-// (既存のimportに以下を追加)
-import { auth } from '@/lib/better-auth/auth'
-
-// (既存の getAllUsers, updateUser 関数)
-
-// --- ここから追加 ---
-
-// ユーザーを削除するサーバー関数
-export const deleteUser = createServerFn('POST', async (userIdToDelete: string) => {
-  // 1. 現在のセッションを取得
-  const session = await auth.getSession()
-  const currentUser = session?.user
-
-  // 2. 権限チェック
-  if (!currentUser || currentUser.role !== 'ADMIN') {
-    throw new Error('管理者権限が必要です。')
-  }
-
-  // 3. 自己削除チェック
-  if (currentUser.id === userIdToDelete) {
-    throw new Error('自分自身を削除することはできません。')
-  }
-
-  // 4. ユーザーを削除
-  await db.delete(userTable).where(eq(userTable.id, userIdToDelete))
-
-  return { success: true }
-})
-// --- ここまで追加 ---
-```
-
-### 3. UIに削除ボタンとロジックを実装する
-
-最後に、`_layout/index.tsx` に削除ボタンを追加し、権限に応じた表示制御と、`useMutation` を使った削除処理を実装します。
+`RouteComponent` に削除エラー表示用のStateを追加し、`deleteUserMutation` の `onError` ハンドラを更新します。削除はモーダルではないため、テーブルの上部など、適切な場所にエラーメッセージを表示するロジックを追加します。
 
 **ファイルを編集:** `src/routes/_layout/index.tsx`
-(変更点が多いので、`RouteComponent` の全体像を記載します)
+(*これがこの機能における最終形です*)
 
 ```tsx
 // (既存のimportに以下を追加)
 import { getSessionUser } from '@/features/session/api'
 import { deleteUser } from '@/features/user/api'
 
-// (既存のコード ... Routeの定義まで)
 
+// (Route定義とdemoUserColumnsはTASK.mdの通り)
+
+// --- RouteComponentの最終形 ---
 function RouteComponent() {
   const queryClient = useQueryClient()
   const [editingUser, setEditingUser] = useState<User | null>(null)
+  const [updateError, setUpdateError] = useState<string | null>(null) // TASK2から継続
+  const [deleteError, setDeleteError] = useState<string | null>(null) // <-- ここを追加
+  const { page, pageSize } = Route.useSearch()
 
-  // 1. 現在のログインユーザー情報を取得
+  // --- データ取得 ---
   const { data: sessionUser } = useQuery({
     queryKey: ['sessionUser'],
     queryFn: getSessionUser,
   })
-
-  const { data: usersQuery } = useQuery({
-    queryKey: ['users'],
-    queryFn: getAllUsers,
+  const { data } = useQuery({
+    queryKey: ['users', page, pageSize],
+    queryFn: () => getAllUsers({ page, pageSize }),
   })
 
-  // (更新用のmutationは変更なし)
-  const updateUserMutation = useMutation({ ... })
+  // --- データ更新・削除 (Mutations) ---
+  const updateUserMutation = useMutation({
+    mutationFn: updateUser,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users', page, pageSize] })
+      setEditingUser(null)
+      setUpdateError(null)
+    },
+    onError: (error) => {
+      setUpdateError(error.message)
+    },
+  })
 
-  // 2. 削除用のmutationを定義
   const deleteUserMutation = useMutation({
     mutationFn: deleteUser,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['users'] })
+      queryClient.invalidateQueries({ queryKey: ['users', page, pageSize] })
+      setDeleteError(null) // 成功したらエラーをクリア
     },
     onError: (error) => {
-      alert(`削除に失敗しました: ${error.message}`)
+      // alert(`削除に失敗しました: ${error.message}`) // alertを削除
+      setDeleteError(error.message) // <-- エラーメッセージをStateに保存
     },
   })
 
-  // 削除ボタンを押したときの処理
+  // --- イベントハンドラ ---
+  const handleEditClick = (user: User) => {
+    setEditingUser(user)
+    setUpdateError(null)
+    setDeleteError(null) // 編集開始時に削除エラーもリセット
+  }
+  const handleFormSubmit = (event: React.FormEvent<HTMLFormElement>) => { /* ... (変更なし) ... */ }
+
   const handleDeleteClick = (userToDelete: User) => {
-    // 3. 自己削除のクライアント側チェック
+    setDeleteError(null) // 削除試行前にエラーをリセット
     if (sessionUser?.id === userToDelete.id) {
       alert('自分自身を削除することはできません。')
       return
     }
-
-    // 4. 確認ダイアログ
     if (window.confirm(`本当に「${userToDelete.name}」さんを削除しますか？`)) {
       deleteUserMutation.mutate(userToDelete.id)
     }
   }
 
-  // (編集のハンドラは変更なし)
-  const handleEditClick = (user: User) => { ... }
-  const handleFormSubmit = (event: React.FormEvent<HTMLFormElement>) => { ... }
+  // --- カラム定義 (編集・削除ボタン) ---
+  // (変更なし)
 
-  // 5. ログインユーザーの権限に応じて操作列を動的に生成
-  const userColumnsWithActions = [
-    ...demoUserColumns,
-    columnHelper.display({
-      id: 'actions',
-      header: '操作',
-      cell: ({ row }) => (
-        <div className="flex gap-2">
-          <button
-            onClick={() => handleEditClick(row.original)}
-            className="text-blue-500 hover:underline"
-          >
-            編集
-          </button>
-          {/* 管理者の場合のみ削除ボタンを表示 */}
-          {sessionUser?.role === 'ADMIN' && (
-            <button
-              onClick={() => handleDeleteClick(row.original)}
-              disabled={deleteUserMutation.isPending}
-              className="text-red-500 hover:underline disabled:text-gray-400"
-            >
-              削除
-            </button>
-          )}
+  // (レンダリング準備)
+  const users = data?.users ?? []
+  const totalCount = data?.total ?? 0
+  const table = useAppTable({
+    data: users,
+    columns: userColumnsWithActions,
+  })
+  const navigate = Route.useNavigate()
+
+  // --- JSX ---
+  return (
+    <div>
+      {deleteError && ( // <-- 削除エラーメッセージを表示
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded mb-4">
+          {deleteError}
         </div>
-      ),
-    }),
-  ]
+      )}
+      <AppTable
+        table={table}
+        pagination={{
+          page: page,
+          pageSize: pageSize,
+          totalCount: totalCount,
+          currentPageCount: users.length,
+          onChangePage: (newPage) => navigate({ search: (p) => ({ ...p, page: newPage }) }),
+          onChangePageSize: (size) => navigate({ search: (p) => ({ ...p, page: 0, pageSize: size }) }),
+        }}
+      />
 
-  // (以降のreturn文は、tableのcolumnsを userColumnsWithActions にする以外はほぼ変更なし)
-  // ...
+      {/* 編集モーダル */}
+      {editingUser && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center">
+          <div className="bg-white p-6 rounded-lg">
+            <h2 className="text-xl mb-4">{editingUser.name} を編集中</h2>
+            {updateError && (
+              <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded mb-4">
+                {updateError}
+              </div>
+            )}
+            <form onSubmit={handleFormSubmit}>
+              <div className="mb-4">
+                <label htmlFor="name" className="block mb-1">名前:</label>
+                <input id="name" name="name" type="text" defaultValue={editingUser.name} className="border p-2 w-full" required />
+              </div>
+              <div className="mb-4">
+                <label htmlFor="email" className="block mb-1">メールアドレス:</label>
+                <input id="email" name="email" type="email" defaultValue={editingUser.email} className="border p-2 w-full" required />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => { setEditingUser(null); setUpdateError(null); }} className="bg-gray-200 px-4 py-2 rounded">
+                  キャンセル
+                </button>
+                <button type="submit" disabled={updateUserMutation.isPending} className="bg-blue-500 text-white px-4 py-2 rounded disabled:bg-gray-400">
+                  {updateUserMutation.isPending ? '更新中...' : '更新'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 ```
-
-### 4. 確認
-
-1.  **管理者ユーザーでログイン**
-    *   ユーザー一覧に「削除」ボタンが表示されていることを確認する。
-    *   他のユーザーの「削除」ボタンをクリックし、確認ダイアログが表示され、OKを押すとユーザーが一覧から消えることを確認する。
-    *   自分自身の行の「削除」ボタンをクリックし、「自分自身を削除することはできません。」というアラートが表示され、削除処理が実行されないことを確認する。
-
-2.  **一般ユーザーでログイン**
-    *   ユーザー一覧の操作列に「削除」ボタンが**表示されていない**ことを確認する。
