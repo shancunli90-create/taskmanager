@@ -15,13 +15,70 @@
 ---
 ## 実装手順
 
-### 1. ユーザー削除用のAPI関数を改修する (変更なし)
+### 1. ユーザー削除用のAPI関数を改修する
 
-(これは先ほどの提案通りです)
+`deleteUser` 関数に、削除対象のユーザーID（文字列）を検証する `.inputValidator()` を追加します。
 
-### 2. 現在のログインユーザー情報を取得するAPI関数 (変更なし)
+**ファイルを編集:** `src/features/user/api.ts`
+(*この内容はタスク1, 2と共通のファイルです*)
+```ts
+// ... (他のimport)
+import { z } from 'zod'
+import { auth } from '@/lib/better-auth/auth'
+import { getRequest } from '@tanstack/react-start/server' // <-- 追記
 
-(これも変更ありません)
+// ... (getAllUsers, updateUser 関数) ...
+
+// --- ここから deleteUser の改修 ---
+
+// ユーザーを削除するサーバー関数
+export const deleteUser = createServerFn({ method: 'POST' })
+  .inputValidator(z.string()) // 削除対象のIDが文字列であることを検証
+  .handler(async ({ data: userIdToDelete }) => { // dataがuserIdToDeleteになる
+    // 1. 現在のセッションを取得
+    const request = getRequest() // <-- 追記
+    const session = await auth.api.getSession({ headers: request.headers }) // <-- 修正
+    const currentUser = session?.user
+
+    // 2. 権限チェック
+    if (!currentUser || currentUser.role !== 'ADMIN') {
+      throw new Error('管理者権限が必要です。')
+    }
+
+    // 3. 自己削除チェック
+    if (currentUser.id === userIdToDelete) {
+      throw new Error('自分自身を削除することはできません。')
+    }
+
+    // 4. ユーザーを削除
+    await db.delete(userTable).where(eq(userTable.id, userIdToDelete))
+
+    return { success: true }
+  })
+// --- ここまで ---
+```
+
+### 2. 現在のログインユーザー情報を取得するAPI関数
+
+この関数は、UI側で「削除」ボタンの表示/非表示を切り替えるために引き続き使用します。
+
+**ファイル:** `src/features/session/api.ts`
+```ts
+import { createServerFn, getRequest } from '@tanstack/react-start/server'
+import { auth } from '../../lib/better-auth/auth'
+import type { User } from '@/db/schema'
+
+// 現在のセッションユーザー情報を取得するサーバー関数
+export const getSessionUser: () => Promise<User | null> = createServerFn('GET').handler(
+  async () => {
+    const request = getRequest()
+    const session = await auth.api.getSession({
+      headers: request.headers,
+    })
+    return session?.user ?? null
+  },
+)
+```
 
 ### 3. UIコンポーネントを実装する
 
