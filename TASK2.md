@@ -1,169 +1,543 @@
-# タスク2: ユーザー情報の更新機能を追加する (改訂版)
+# タスク2: ユーザーの追加、更新機能を追加する
 
 ## 概要
 
 `useMutation` を利用したユーザー更新機能に、サーバーサイドでの入力値検証パターンを適用し、UIを新しいページネーションの仕組みに対応させ、**エラー表示を改善する**。
 
 ### 改訂のポイント
-*   **エラー表示の改善**: `useMutation` の `onError` でエラーメッセージをStateに保存し、モーダル内に表示するように変更する。
 
-## ⚠️ 重要な注意点: `sessionTable`と`accountTable`について
+- **エラー表示の改善**: `useMutation` の `onError` でエラーメッセージをStateに保存し、モーダル内に表示するように変更する。
+
+## ⚠️ 重要な注意点:
 
 ユーザー情報を更新する際、`sessionTable`や`accountTable`の**トークンやIDを直接変更する必要は一切ありませんし、絶対に変更しないでください。**
 
-**(中略)**
+ユーザーの追加をする場合は、better-authのapiを使用する。
 
 ---
 
 ## 実装手順
 
-### 1. ユーザー更新用のAPI関数を改修する (変更なし)
+### 1. ユーザー追加、更新用のAPI関数を作成する
 
-(これは先ほどの提案通りです)
+feature/user/api.ts
+
+```ts
+import { createInsertSchema } from 'drizzle-zod'
+import z from 'zod'
+
+//その他処理の下に
+
+export const updateUserSchema = createInsertSchema(userTable).pick({
+  id: true,
+  name: true,
+  email: true,
+  role: true,
+})
+
+export const insertUserSchema = createInsertSchema(userTable)
+  .pick({
+    name: true,
+
+    email: true,
+  })
+
+  .extend({
+    password: z.string(),
+  })
+
+export const updateUserFn = createServerFn({ method: 'POST' })
+  .inputValidator(updateUserSchema)
+
+  .handler(async ({ data: { id, ...rest } }) => {
+    await db.transaction(async (tx) => {
+      if (id != null) {
+        await tx
+
+          .update(userTable)
+
+          .set({
+            ...rest,
+
+            updatedAt: sql`now()`,
+          })
+
+          .where(eq(userTable.id, id))
+      }
+    })
+  })
+
+export const insertUserFn = createServerFn({ method: 'POST' })
+  .inputValidator(insertUserSchema)
+
+  .handler(async ({ data: { ...rest } }) => {
+    return await db.transaction(async () => {
+      await auth.api.signUpEmail({
+        body: {
+          ...rest,
+        }, // これを追加すると、セッション（クッキー）が発行されません
+
+        query: {
+          disableSession: true,
+        },
+      })
+    })
+  })
+```
 
 ### 2. UIコンポーネントを実装する
+
+以下に実装する。
+
+components/dialog/EditUserDialog
+
+```tsx
+import { useForm } from '@tanstack/react-form'
+
+import { useMutation } from '@tanstack/react-query'
+
+import { useState } from 'react'
+
+import type { User } from '@/db/schema'
+
+import {
+  insertUserFn,
+  insertUserSchema,
+  updateUserFn,
+  updateUserSchema,
+} from '@/features/user/api'
+
+export function EditUserDialog({
+  user,
+
+  onClose,
+}: {
+  user: User | null
+
+  onClose: (edited: boolean) => void
+}) {
+  const [error, setError] = useState<string | null>(null) // 更新用 Mutation
+
+  const updateUserMutation = useMutation({
+    mutationFn: updateUserFn,
+
+    onSuccess: () => onClose(true),
+
+    onError: (err) => setError(err.message),
+  }) // 作成用 Mutation
+
+  const insertUserMutation = useMutation({
+    mutationFn: insertUserFn,
+
+    onSuccess: () => {
+      onClose(true)
+    },
+
+    onError: (err) => setError(err.message),
+  })
+
+  const form = useForm({
+    // user がある場合はその値を、ない場合は空文字を初期値にする
+
+    defaultValues: {
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
+      name: user?.name ?? '',
+
+      email: user?.email ?? '',
+
+      password: '',
+
+      role: (user?.role as 'ADMIN' | 'USER') ?? 'USER',
+    },
+
+    onSubmit: ({ value }) => {
+      if (user) {
+        // 編集モード
+
+        const parsed = updateUserSchema.safeParse({ ...value, id: user.id })
+
+        if (!parsed.success) {
+          setError(parsed.error.message)
+
+          return
+        }
+
+        updateUserMutation.mutate({ data: parsed.data })
+      } else {
+        // 新規作成モード
+
+        const parsed = insertUserSchema.safeParse(value)
+
+        if (!parsed.success) {
+          setError(parsed.error.message)
+
+          return
+        }
+
+        insertUserMutation.mutate({ data: parsed.data })
+      }
+    },
+  })
+
+  const isPending = updateUserMutation.isPending || insertUserMutation.isPending
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+       
+      <div className="bg-white p-6 rounded-lg shadow-xl w-96">
+        <h2 className="text-xl font-bold mb-4">
+                    {user ? 'ユーザー編集' : '新規ユーザー作成'}     
+        </h2>
+         
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+
+            e.stopPropagation()
+
+            form.handleSubmit()
+          }}
+          className="grid gap-4"
+        >
+                   {' '}
+          {error && <div className="text-red-500 text-sm">{error}</div>}       
+           {' '}
+          <form.Field name="name">
+                       {' '}
+            {(field) => (
+              <div className="grid gap-1">
+                               {' '}
+                <label className="text-sm font-medium">名前</label>             
+                 {' '}
+                <input
+                  value={field.state.value}
+                  onChange={(e) => field.handleChange(e.target.value)}
+                  className="border p-2 rounded"
+                  placeholder="山田 太郎"
+                />
+                       
+              </div>
+            )}
+          </form.Field>
+          <form.Field name="email">
+            {(field) => (
+              <div className="grid gap-1">
+                <label className="text-sm font-medium">
+                <input
+                  type="email"
+                  value={field.state.value}
+                  onChange={(e) => field.handleChange(e.target.value)}
+                  className="border p-2 rounded"
+                  placeholder="sample@example.com"
+                  disabled={!!user} // 編集時はメール変更不可にする場合が多い
+                />       
+              </div>
+            )}
+          </form.Field>
+          {/* 編集時はパスワード入力を任意にする（または非表示にする）などの調整が可能 */}
+                 
+          {!user && (
+            <form.Field name="password">
+                     
+              {(field) => (
+                <div className="grid gap-1">
+                               
+                  <label className="text-sm font-medium">パスワード</label>     
+                       
+                  <input
+                    type="password"
+                    value={field.state.value}
+                    onChange={(e) => field.handleChange(e.target.value)}
+                    className="border p-2 rounded"
+                  />
+                           
+                </div>
+              )}
+                         {' '}
+            </form.Field>
+          )}
+                   {' '}
+          {user && (
+            <form.Field name="role">
+                           {' '}
+              {(field) => (
+                <div className="grid gap-1">
+                                   {' '}
+                  <label className="text-sm font-medium">権限</label>           
+                       {' '}
+                  <select
+                    value={field.state.value}
+                    onChange={(e) => field.handleChange(e.target.value as any)}
+                    className="border p-2 rounded bg-white"
+                  >
+                                       {' '}
+                    <option value="USER">一般ユーザー</option>                 
+                      <option value="ADMIN">管理者</option>               
+                     {' '}
+                  </select>
+                                 {' '}
+                </div>
+              )}
+                         {' '}
+            </form.Field>
+          )}
+                   {' '}
+          <div className="flex justify-end gap-2 mt-4">
+                       {' '}
+            <button
+              type="button"
+              onClick={() => onClose(false)}
+              className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded"
+              disabled={isPending}
+            >
+                            キャンセル            {' '}
+            </button>
+                       {' '}
+            <button
+              type="submit"
+              disabled={isPending}
+              className="bg-cyan-600 text-white px-4 py-2 rounded hover:bg-cyan-700 disabled:opacity-50"
+            >
+                           {' '}
+              {isPending ? '保存中...' : user ? '更新する' : '作成する'}       
+                 {' '}
+            </button>
+                     {' '}
+          </div>
+                 {' '}
+        </form>
+             {' '}
+      </div>
+         {' '}
+    </div>
+  )
+}
+```
+
+### 3. UIコンポーネントを実装する
 
 `RouteComponent` にエラー表示用のStateを追加し、`updateUserMutation` の `onError` ハンドラを更新し、モーダルのフォーム内にエラーメッセージを表示するロジックを追加します。
 
 **ファイルを編集:** `src/routes/_layout/index.tsx`
-(*この内容はタスク1, 3と共通のファイルです*)
+(_この内容はタスク1, 3と共通のファイルです_)
 
 ```tsx
-// (既存のimportに以下を追加)
-import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { updateUser } from '@/features/user/api'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
-// (Route定義とdemoUserColumnsはTASK.mdの通り)
+import { createFileRoute } from '@tanstack/react-router'
 
-// --- RouteComponentの全体像 ---
+import { type ColumnDef } from '@tanstack/react-table'
+
+import { useMemo, useState } from 'react'
+
+import type { User } from '@/db/schema'
+
+import type { UserResponse } from '@/features/user/api'
+
+import { EditUserDialog } from '@/components/dialog/InsertUserDialog'
+
+import { pagingSchema } from '@/features/paging'
+
+import { getAllUsersFn } from '@/features/user/api'
+
+import { DataTable } from '@/components/table/DataTable'
+
+import { Pagination } from '@/components/table/Pagination'
+
+export const Route = createFileRoute('/_layout/')({
+  component: RouteComponent,
+
+  validateSearch: pagingSchema,
+
+  loaderDeps: ({ search }) => search,
+
+  loader: async ({ context, deps }) => {
+    const { page, pageSize } = deps
+
+    await context.queryClient.ensureQueryData<UserResponse>({
+      queryKey: ['users', page, pageSize],
+
+      queryFn: () =>
+        getAllUsersFn({ data: { page: page, pageSize: pageSize } }),
+    })
+
+    return { page, pageSize }
+  },
+})
+
 function RouteComponent() {
-  const queryClient = useQueryClient()
-  const [editingUser, setEditingUser] = useState<User | null>(null)
-  const [updateError, setUpdateError] = useState<string | null>(null) // <-- ここを追加
   const { page, pageSize } = Route.useSearch()
 
-  // --- データ取得 ---
+  const [editingUser, setEditingUser] = useState<User | null>(null)
+
+  const [show, setShow] = useState<'insert' | 'update' | 'delete' | null>(null)
+
+  const queryClient = useQueryClient()
+
+  const columns = useMemo(() => {
+    const column: ColumnDef<User>[] = [
+      {
+        accessorKey: 'id',
+
+        header: 'ID',
+      },
+
+      {
+        accessorKey: 'name',
+
+        header: '名前',
+
+        cell(cellProps) {
+          return <>{cellProps.row.original.name}さん</>
+        },
+      },
+
+      {
+        accessorKey: 'email',
+
+        header: 'メールアドレス',
+      },
+
+      {
+        accessorKey: 'role',
+
+        header: '権限',
+
+        cell(cellProps) {
+          return (
+            <>
+                           {' '}
+              {cellProps.row.original.role === 'ADMIN'
+                ? '管理者'
+                : '一般ユーザー'}
+                         {' '}
+            </>
+          )
+        },
+      },
+
+      {
+        accessorKey: 'createdAt',
+
+        header: '作成日時',
+
+        meta: {
+          cellClass: 'whitespace-nowrap',
+        },
+
+        cell(cellProps) {
+          return <>{cellProps.row.original.createdAt?.toLocaleString()}</>
+        },
+      },
+
+      {
+        id: 'actions',
+
+        header: '操作',
+
+        cell(cellProps) {
+          const user = cellProps.row.original
+
+          return (
+            <button
+              onClick={() => {
+                setEditingUser(user)
+
+                setShow('update')
+              }}
+              className="text-blue-600 hover:text-blue-800 font-medium"
+            >
+                            編集            {' '}
+            </button>
+          )
+        },
+      },
+    ]
+
+    return column
+  }, []) // 4. useQueryもloaderと同じキーと関数でデータを取得
+
   const { data } = useQuery({
     queryKey: ['users', page, pageSize],
-    queryFn: () => getAllUsers({ page, pageSize }),
+
+    queryFn: () => getAllUsersFn({ data: { page: page, pageSize: pageSize } }),
   })
 
-  // --- データ更新(Mutation) ---
-  const updateUserMutation = useMutation({
-    mutationFn: updateUser,
-    onSuccess: () => {
-      // 更新が成功したら、現在のページのクエリを無効化して再取得
-      queryClient.invalidateQueries({ queryKey: ['users', page, pageSize] })
-      setEditingUser(null) // モーダルを閉じる
-      setUpdateError(null) // 成功したらエラーをクリア
-    },
-    onError: (error) => {
-      // alert(`更新に失敗しました: ${error.message}`) // alertを削除
-      setUpdateError(error.message) // <-- エラーメッセージをStateに保存
-    },
-  })
-
-  // --- イベントハンドラ ---
-  const handleEditClick = (user: User) => {
-    setEditingUser(user)
-    setUpdateError(null) // 編集開始時にエラーをリセット
-  }
-
-  const handleFormSubmit = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (!editingUser) return
-
-    const formData = new FormData(event.currentTarget)
-    const name = formData.get('name') as string
-    const email = formData.get('email') as string
-
-    updateUserMutation.mutate({ id: editingUser.id, name, email })
-  }
-
-  // --- カラム定義 (編集ボタン追加) ---
-  // (変更なし)
-
-  // --- レンダリング準備 ---
-  const users = data?.users ?? []
-  const totalCount = data?.total ?? 0
-  const table = useAppTable({
-    data: users,
-    columns: userColumnsWithActions,
-  })
   const navigate = Route.useNavigate()
 
-  // --- JSX ---
   return (
     <div>
-      <AppTable
-        table={table}
-        pagination={{
-          page: page,
-          pageSize: pageSize,
-          totalCount: totalCount,
-          currentPageCount: users.length,
-          onChangePage: (newPage) => navigate({ search: (p) => ({ ...p, page: newPage }) }),
-          onChangePageSize: (size) => navigate({ search: (p) => ({ ...p, page: 0, pageSize: size }) }),
+           {' '}
+      <div className="mb-4 flex justify-end">
+               {' '}
+        <button
+          onClick={() => setShow('insert')}
+          className="bg-blue-600 text-white px-4 py-2 rounded"
+        >
+                    ユーザー新規作成        {' '}
+        </button>
+             {' '}
+      </div>
+            <DataTable<User> columns={columns} data={data?.users ?? []} />     {' '}
+      <Pagination
+        page={page}
+        pageSize={pageSize}
+        totalCount={data?.total ?? 0}
+        currentPageCount={data?.users.length ?? 0}
+        usePageSize
+        onChangePage={(newPage) => {
+          navigate({
+            search: (prev) => ({
+              ...prev,
+
+              page: newPage,
+            }),
+          })
+        }}
+        onChangePageSize={(newPageSize) => {
+          navigate({
+            search: (prev) => ({
+              ...prev,
+
+              page: 0,
+
+              pageSize: newPageSize,
+            }),
+          })
         }}
       />
+           {' '}
+      {show === 'insert' && (
+        <EditUserDialog
+          user={null}
+          onClose={async (edited) => {
+            if (edited) {
+              await queryClient.refetchQueries({
+                queryKey: ['users', page, pageSize],
+              })
+            }
 
-      {/* 編集モーダル */}
-      {editingUser && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center">
-          <div className="bg-white p-6 rounded-lg">
-            <h2 className="text-xl mb-4">{editingUser.name} を編集中</h2>
-            {updateError && ( // <-- エラーメッセージを表示
-              <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded mb-4">
-                {updateError}
-              </div>
-            )}
-            <form onSubmit={handleFormSubmit}>
-              <div className="mb-4">
-                <label htmlFor="name" className="block mb-1">名前:</label>
-                <input
-                  id="name"
-                  name="name"
-                  type="text"
-                  defaultValue={editingUser.name}
-                  className="border p-2 w-full"
-                  required
-                />
-              </div>
-              <div className="mb-4">
-                <label htmlFor="email" className="block mb-1">メールアドレス:</label>
-                <input
-                  id="email"
-                  name="email"
-                  type="email"
-                  defaultValue={editingUser.email}
-                  className="border p-2 w-full"
-                  required
-                />
-              </div>
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingUser(null)
-                    setUpdateError(null) // モーダルを閉じる際にエラーもクリア
-                  }}
-                  className="bg-gray-200 px-4 py-2 rounded"
-                >
-                  キャンセル
-                </button>
-                <button
-                  type="submit"
-                  disabled={updateUserMutation.isPending}
-                  className="bg-blue-500 text-white px-4 py-2 rounded disabled:bg-gray-400"
-                >
-                  {updateUserMutation.isPending ? '更新中...' : '更新'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            setShow(null)
+          }}
+        />
       )}
+           {' '}
+      {show === 'update' && (
+        <EditUserDialog
+          user={editingUser}
+          onClose={async (edited) => {
+            if (edited) {
+              await queryClient.refetchQueries({
+                queryKey: ['users', page, pageSize],
+              })
+            }
+
+            setShow(null)
+          }}
+        />
+      )}
+         {' '}
     </div>
   )
 }
