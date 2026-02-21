@@ -2,7 +2,7 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useForm } from '@tanstack/react-form'
 import { z } from 'zod'
 import { useState } from 'react'
-
+import type { SuccessContext } from 'better-auth/react'
 import { getEnsureSession } from '@/features/session/api'
 import { authClient } from '@/lib/better-auth/auth-client'
 
@@ -10,9 +10,13 @@ const loginFormSchema = z.object({
   email: z.email({ message: 'メール形式で入力してください' }),
   password: z.string().min(8, '8文字以上必要です'),
 })
-
+const searchSchema = z.object({
+  redirect: z.string().optional(),
+})
 export const Route = createFileRoute('/login')({
   component: RouteComponent,
+
+  validateSearch: searchSchema,
   beforeLoad: async (ctx) => {
     const session = await getEnsureSession(ctx.context.queryClient)
     if (session) {
@@ -23,11 +27,13 @@ export const Route = createFileRoute('/login')({
 
 function RouteComponent() {
   const [error, setError] = useState<string>()
-
+  const { queryClient } = Route.useRouteContext()
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
   const form = useForm({
     defaultValues: {
-      email: '',
-      password: '',
+      email: 'admin@sample.com',
+      password: 'Password123!',
     },
     onSubmit: async ({ value }) => {
       const parsed = loginFormSchema.safeParse(value)
@@ -40,6 +46,21 @@ function RouteComponent() {
       await authClient.signIn.email({
         email: parsed.data.email,
         password: parsed.data.password,
+        fetchOptions: {
+          onSuccess(context: SuccessContext<typeof authClient.$Infer.Session>) {
+            if (context.data.user.role !== 'ADMIN') {
+              setError('処理に失敗しました。')
+              return
+            }
+            queryClient.setQueryData(['session'], context.data)
+            const resolvedRedirect = search.redirect
+            if (resolvedRedirect && location.pathname != resolvedRedirect) {
+              navigate({ to: resolvedRedirect })
+            } else {
+              navigate({ to: '/' })
+            }
+          },
+        },
       })
     },
   })

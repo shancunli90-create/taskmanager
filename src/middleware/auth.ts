@@ -8,7 +8,7 @@ export const authMiddleware = createMiddleware().server(async ({ next }) => {
   const session = await auth.api.getSession({ headers })
   if (!session) {
     console.log('セッション終了 - リダイレクト')
-    throw redirect({ to: '/' })
+    throw redirect({ to: '/login' })
   }
   return await next()
 })
@@ -25,7 +25,7 @@ export const adminOnlyMiddleware = createMiddleware().server(
     if (session.user.role !== 'ADMIN') {
       console.log('権限不足 - ログイン画面へリダイレクト')
       await auth.api.signOut({ headers })
-      throw redirect({ to: '/' })
+      throw redirect({ to: '/login' })
     }
 
     return next()

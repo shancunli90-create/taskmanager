@@ -1,4 +1,5 @@
 import { getEnsureSession } from '@/features/session/api'
+import { authClient } from '@/lib/better-auth/auth-client'
 import { authMiddleware } from '@/middleware/auth'
 import { createFileRoute, Link, Outlet, redirect } from '@tanstack/react-router'
 import { Menu } from 'lucide-react'
@@ -22,7 +23,8 @@ export const Route = createFileRoute('/_layout')({
 
 function RouteComponent() {
   const [isOpen, setIsOpen] = useState(false)
-
+  const { queryClient } = Route.useRouteContext()
+  const navigate = Route.useNavigate()
   return (
     <div className="h-screen flex flex-col">
       {/* Header */}
@@ -42,14 +44,36 @@ function RouteComponent() {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
         <aside
-          className={` transition-all duration-300 ${
+          className={`transition-all duration-300 border-r ${
             isOpen ? 'w-60' : 'w-0'
           } overflow-hidden`}
         >
-          <div className="p-4">
-            <Link to="/" className="block p-3 rounded-lg hover:bg-gray-100">
-              Home
-            </Link>
+          {/* flex flex-col と h-full を追加して、縦に並べて高さを一杯にする */}
+          <div className="flex flex-col h-full p-4">
+            {/* メインメニュー項目 */}
+            <nav className="space-y-2">
+              <Link to="/" className="block p-3 rounded-lg hover:bg-gray-100">
+                Home
+              </Link>
+              {/* 他のメニューを足すならここ */}
+            </nav>
+
+            {/* mt-auto をつけることで、これより下の要素が一番下に押し下げられます */}
+            <button
+              className="mt-auto block w-full p-3 text-left text-red-600 rounded-lg hover:bg-red-50 transition-colors"
+              onClick={() =>
+                authClient.signOut({
+                  fetchOptions: {
+                    onSuccess() {
+                      queryClient.clear()
+                      navigate({ to: '/login' })
+                    },
+                  },
+                })
+              }
+            >
+              ログアウト
+            </button>
           </div>
         </aside>
 

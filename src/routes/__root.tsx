@@ -42,6 +42,13 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       },
     ],
   }),
+  notFoundComponent: () => (
+    <RootDocument>
+      <div className="p-4">
+        <a href="/">ホームへ戻る</a>
+      </div>
+    </RootDocument>
+  ),
   shellComponent: RootDocument,
 })
 
