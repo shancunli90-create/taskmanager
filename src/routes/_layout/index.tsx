@@ -1,5 +1,5 @@
-import { AppTable } from '@/components/table/AppTable'
-import { useAppTable } from '@/components/table/useAppTable'
+import { DataTable } from '@/components/table/DataTable'
+import { Pagination } from '@/components/table/Pagination'
 import type { User } from '@/db/schema'
 import { createFileRoute } from '@tanstack/react-router'
 import { createColumnHelper } from '@tanstack/react-table'
@@ -72,39 +72,32 @@ export const Route = createFileRoute('/_layout/')({
 })
 
 function RouteComponent() {
-  const table = useAppTable({
-    data: demoUsers,
-    columns: demoUserColumns,
-  })
   const navigate = Route.useNavigate()
   return (
     <div>
-      <AppTable
-        table={table}
-        pagination={{
-          page: 0,
-          pageSize: 20,
-          totalCount: 3,
-          currentPageCount: 3,
-
-          onChangePage: (newPage) => {
-            navigate({
-              search: (prev) => ({
-                ...prev,
-                page: newPage,
-              }),
-            })
-          },
-
-          onChangePageSize: (newPageSize) => {
-            navigate({
-              search: (prev) => ({
-                ...prev,
-                page: 0,
-                pageSize: newPageSize,
-              }),
-            })
-          },
+      <DataTable columns={demoUserColumns} data={demoUsers ?? []} />
+      <Pagination
+        page={0}
+        pageSize={20}
+        totalCount={3}
+        currentPageCount={3}
+        usePageSize
+        onChangePage={(newPage) => {
+          navigate({
+            search: (prev) => ({
+              ...prev,
+              page: newPage,
+            }),
+          })
+        }}
+        onChangePageSize={(newPageSize) => {
+          navigate({
+            search: (prev) => ({
+              ...prev,
+              page: 0,
+              pageSize: newPageSize,
+            }),
+          })
         }}
       />
     </div>
